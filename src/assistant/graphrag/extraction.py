@@ -40,6 +40,17 @@ class RawExtraction(BaseModel):
     entities: list[RawEntity] = []
     relations: list[RawRelation] = []
 
+def _repair_truncated_json(text: str) -> str:
+    """Восстанавливает оборванный JSON, закрывая скобки до последнего целого объекта."""
+    last_brace = text.rfind("}")
+    if last_brace == -1:
+        return text
+
+    truncated = text[:last_brace + 1].strip()
+    open_brackets = truncated.count("[") - truncated.count("]")
+    open_braces = truncated.count("{") - truncated.count("}")
+
+    return truncated + ("]" * max(0, open_brackets)) + ("}" * max(0, open_braces))
 
 def _clean_json_text(text: str) -> str:
     """Очищает строку от markdown-блоков ```json ... ```."""
@@ -165,11 +176,15 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
 
     for _ in range(2):
         output = llm.chat(messages=messages, json_schema=EXTRACTION_SCHEMA, max_tokens=4096)
+        cleaned = _clean_json_text(output.content)
         try:
-            cleaned = _clean_json_text(output.content)
             extraction = RawExtraction.model_validate_json(cleaned)
         except (ValidationError, ValueError, TypeError):
-            continue
+            try:
+                repaired = _repair_truncated_json(cleaned)
+                extraction = RawExtraction.model_validate_json(repaired)
+            except (ValidationError, ValueError, TypeError):
+                continue
 
         chunk_codes: set[str] = set(find_codes(chunk.text))
         entities, dropped_ent = check_entities(extraction.entities, chunk_codes)
