@@ -23,6 +23,8 @@ from assistant.infra.schemas import (
 )
 
 
+MAX_TOKENS = 4096
+
 class RawEntity(BaseModel):
     type: str
     name: str
@@ -175,7 +177,7 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
     ]
 
     for _ in range(2):
-        output = llm.chat(messages=messages, json_schema=EXTRACTION_SCHEMA, max_tokens=4096)
+        output = llm.chat(messages=messages, json_schema=EXTRACTION_SCHEMA, max_tokens=MAX_TOKENS)
         cleaned = _clean_json_text(output.content)
         try:
             extraction = RawExtraction.model_validate_json(cleaned)
