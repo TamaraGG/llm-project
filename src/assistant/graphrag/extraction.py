@@ -164,7 +164,7 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
     ]
 
     for _ in range(2):
-        output = llm.chat(messages=messages, json_schema=EXTRACTION_SCHEMA)
+        output = llm.chat(messages=messages, json_schema=EXTRACTION_SCHEMA, max_tokens=4096)
         try:
             cleaned = _clean_json_text(output.content)
             extraction = RawExtraction.model_validate_json(cleaned)
