@@ -3,8 +3,15 @@ from typing import Any
 
 import networkx as nx
 
-from assistant.infra.schemas import Entity, ExtractionResult, Relation
+from assistant.infra.schemas import ExtractionResult, Entity
 
+
+def _add_entity(graph: nx.DiGraph, entity: Entity, chunk_id: str) -> None:
+    node_id = entity.node_id
+    if node_id not in graph:
+        graph.add_node(node_id, type=entity.type, name=entity.name, sources=[chunk_id])
+    elif chunk_id not in graph.nodes[node_id]["sources"]:
+        graph.nodes[node_id]["sources"].append(chunk_id)
 
 def _resolve_replacement_conflicts(
         graph: nx.DiGraph,
@@ -48,19 +55,18 @@ def build_graph(results: list[ExtractionResult]) -> nx.DiGraph:
         chunk_id = result.chunk_id
 
         for entity in result.entities:
-
-            if entity.node_id not in graph:
-                graph.add_node(entity.node_id, type=entity.type, name=entity.name, sources=[chunk_id])
-            elif chunk_id not in graph.nodes[entity.node_id]["sources"]:
-                graph.nodes[entity.node_id]["sources"].append(chunk_id)
+            _add_entity(graph, entity, chunk_id)
 
         for relation in result.relations:
-            if not relation.matches_schema():
-                continue
-
             object_id = relation.object.node_id
             subject_id = relation.subject.node_id
             rel_type = relation.type
+
+            if not relation.matches_schema() or (rel_type == "REPLACED_BY" and subject_id == object_id):
+                continue
+
+            _add_entity(graph, relation.subject, chunk_id)
+            _add_entity(graph, relation.object, chunk_id)
 
             if rel_type == "REPLACED_BY":
                 nodes_in_replaced_by.add((object_id, subject_id) if object_id < subject_id else (subject_id, object_id))
