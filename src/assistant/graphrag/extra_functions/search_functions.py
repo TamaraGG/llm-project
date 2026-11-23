@@ -3,7 +3,13 @@ from typing import Any
 
 import networkx as nx
 
-from assistant.graphrag.prompts.search_prompts import LOCAL_SEARCH_EXAMPLES, LOCAL_SEARCH_PROMPT
+from assistant.graphrag.prompts.search_prompts import (
+    GLOBAL_REDUCE_PROMPT,
+    GLOBAL_SEARCH_EXAMPLES,
+    GLOBAL_SEARCH_PROMPT,
+    LOCAL_SEARCH_EXAMPLES,
+    LOCAL_SEARCH_PROMPT,
+)
 
 
 def get_path_edges(graph: nx.DiGraph, path: list[str]) -> list[dict]:
@@ -158,7 +164,7 @@ def build_local_search_context(
             total_chars += extra_chars
 
         for edge in path:
-            sources.update(source.split("#", 1)[0] for source in edge.get("sources", []))
+            sources.update(clean_sources_attribute(edge.get("sources", [])))
 
     return facts, sorted(sources)
 
@@ -168,7 +174,8 @@ def format_local_search_input(question: str, facts: list[str]) -> str:
 
 
 def build_local_search_messages(question: str, facts: list[str]) -> list[dict[str, str]]:
-    """Составляет сообщения для LLM с системным промптом, few-shot, вопросом пользователя и фактами"""
+    """Составляет сообщения для LLM для локального поиска
+    с системным промптом, few-shot, вопросом пользователя и фактами"""
 
     messages = [{"role": "system", "content": LOCAL_SEARCH_PROMPT}]
     for example, answer in LOCAL_SEARCH_EXAMPLES:
@@ -177,3 +184,36 @@ def build_local_search_messages(question: str, facts: list[str]) -> list[dict[st
         messages.append({"role": "assistant", "content": answer})
     messages.append({"role": "user", "content": format_local_search_input(question, facts)})
     return messages
+
+def clean_sources_attribute(sources_attribute: list[str]) -> list[str]:
+    return [source.split("#", 1)[0] for source in sources_attribute]
+
+def format_global_search_input(question: str, summary: str) -> str:
+    return f"ВОПРОС:\n{question}\n\nСУММАРИЗАЦИЯ СООБЩЕСТВА:\n{summary}"
+
+def build_global_search_messages(question: str, community_summary: str) -> list[dict[str, str]]:
+    """Составляет сообщения для LLM для глобального поиска (шаг 1)
+        с системным промптом, few-shot, вопросом пользователя и фактами"""
+
+    messages = [{"role": "system", "content": GLOBAL_SEARCH_PROMPT}]
+
+    for example, answer in GLOBAL_SEARCH_EXAMPLES:
+        messages.append({
+            "role": "user",
+            "content": format_global_search_input(example["question"], example["summary"]),
+        })
+        messages.append({"role": "assistant", "content": answer})
+    messages.append({"role": "user", "content": format_global_search_input(question, community_summary)})
+
+    return messages
+
+
+def build_global_reduce_messages(question: str, partial_answers: list[str]) -> list[dict[str, str]]:
+    """Составляет сообщения для LLM для глобального поиска (шаг 2)
+            с системным промптом, few-shot, вопросом пользователя и фактами"""
+
+    context = "\n".join(f"{index}. {answer}" for index, answer in enumerate(partial_answers, start=1))
+    return [
+        {"role": "system", "content": GLOBAL_REDUCE_PROMPT},
+        {"role": "user", "content": f"ВОПРОС:\n{question}\n\nЧАСТИЧНЫЕ ОТВЕТЫ:\n{context}"},
+    ]

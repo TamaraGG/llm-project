@@ -1,17 +1,22 @@
 """Два режима поиска по графу. Требования FR-4, FR-5 и FR-10."""
+from pydantic import BaseModel, Field, ValidationError
 
 from assistant.graphrag.extra_functions.search_functions import (
+    build_global_reduce_messages,
+    build_global_search_messages,
     build_local_search_context,
     build_local_search_messages,
+    clean_sources_attribute,
     find_ego_paths,
     find_paths_between_nodes,
     find_replacement_chains,
     get_path_edges,
 )
+from assistant.graphrag.extraction import _clean_json_text
 from assistant.graphrag.prompts.search_prompts import REFUSAL_SEARCH_ANSWER
 from assistant.infra.grounding import code_type, find_codes, find_names
 from assistant.infra.llm import LLMClient
-from assistant.infra.schemas import Answer, KnowledgeBase
+from assistant.infra.schemas import MAP_SCHEMA, Answer, KnowledgeBase
 
 
 def local_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
@@ -77,6 +82,10 @@ def local_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
         return Answer(text=REFUSAL_SEARCH_ANSWER, sources=sources, facts=facts, refused=True)
     return Answer(text=response.content, sources=sources, facts=facts, refused=False)
 
+class GlobalSearchOutput(BaseModel):
+    answer: str
+    score: int = Field(ge=0, le=10)
+
 def global_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
     """Отвечает на обзорный вопрос по сводкам сообществ в два шага.
 
@@ -84,5 +93,33 @@ def global_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
     Шаг reduce: частичные ответы с оценкой выше 0 объединяются в итоговый ответ.
     Если таких ответов нет, возвращается `Answer(..., refused=True)`.
     """
-    # TODO: частичные ответы по сводкам, объединение
-    raise NotImplementedError("Реализуйте global_search")
+    partial_answers: list[GlobalSearchOutput] = []
+    sources: set[str] = set()
+
+    for community in kb.communities:
+        output = llm.chat(messages=build_global_search_messages(question, community.summary), json_schema=MAP_SCHEMA)
+        cleaned: str = _clean_json_text(output.content)
+        try:
+            partial_answer: GlobalSearchOutput = GlobalSearchOutput.model_validate_json(cleaned)
+        except ValidationError:
+            continue
+
+        if partial_answer.score == 0:
+            continue
+
+        partial_answers.append(partial_answer)
+        sources.update([source
+                        for node in community.nodes
+                        for source in clean_sources_attribute(kb.graph.nodes[node].get("sources", []))
+                        ])
+
+    if len(partial_answers) == 0:
+        return Answer(text=REFUSAL_SEARCH_ANSWER, refused=True)
+
+    response = llm.chat(messages=build_global_reduce_messages(
+        question, [partial_answer.answer for partial_answer in partial_answers],
+    ))
+    final_answer = response.content
+    refused = final_answer.strip().rstrip(".!?…").rstrip().casefold() == REFUSAL_SEARCH_ANSWER
+
+    return Answer(text=final_answer, sources=sorted(sources), refused=refused)
